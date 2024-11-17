@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Voice Assistant</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <h3 class="center-align">AI Voice Assistant</h3>
+
+        <!-- Record Button -->
+        <div class="row center-align">
+            <button id="recordButton" class="btn-large blue waves-effect waves-light">
+                <i class="material-icons left">mic</i> Record
+            </button>
+        </div>
+
+        <!-- Status Messages -->
+        <div id="statusMessage" class="card-panel teal lighten-5 center-align">
+            <p>Waiting for action...</p>
+        </div>
+
+        <!-- Extracted Categories -->
+        <div id="extractedCategories" class="card-panel teal lighten-5">
+            <h5>Extracted Information</h5>
+            <table class="striped centered">
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Project Name</td>
+                        <td id="projectName"></td>
+                    </tr>
+                    <tr>
+                        <td>Amount</td>
+                        <td id="amount"></td>
+                    </tr>
+                    <tr>
+                        <td>Reason</td>
+                        <td id="reason"></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Missing Fields -->
+        <div id="missingFields" class="red-text center-align"></div>
+
+        <!-- Confirm or Cancel Buttons -->
+        <div class="row center-align">
+            <button id="confirmButton" class="btn green waves-effect waves-light" disabled>
+                <i class="material-icons left">check</i> Confirm
+            </button>
+            <button id="cancelButton" class="btn red waves-effect waves-light">
+                <i class="material-icons left">cancel</i> Cancel
+            </button>
+        </div>
+
+        <!-- Display CSV -->
+        <div class="row">
+            <h5 class="center-align">Saved Requests</h5>
+            <div id="csvTable">
+                {{ csv_data|safe }}
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+    <script>
+        let missingFieldsQueue = [];
+    
+        // Record and process audio
+        document.getElementById('recordButton').addEventListener('click', function () {
+            document.getElementById('statusMessage').innerHTML = `<p>Recording . . .</p>`;
+            fetch('/record', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('statusMessage').innerHTML = `<p>${data.message}</p><p>${data.transcription}</p>`;
+                    fetch('/process', { method: 'POST' })
+                        .then(response => response.json())
+                        .then(data => {
+                            const extracted = data.intent_data.entities;
+                            document.getElementById('projectName').innerText = extracted.PROJECT_NAME || 'Missing';
+                            document.getElementById('amount').innerText = extracted.AMOUNT || 'Missing';
+                            document.getElementById('reason').innerText = extracted.REASON || 'Missing';
+    
+                            missingFieldsQueue = data.missing_fields;
+    
+                            if (missingFieldsQueue.length === 0) {
+                                // Generate and display confirmation text
+                                const confirmationText = `
+                                    You are requesting money for project ${extracted.PROJECT_NAME || 'Unknown'} 
+                                    with an amount of ${extracted.AMOUNT || 'Unknown'} 
+                                    for ${extracted.REASON || 'Unknown'}. 
+                                    Do you want to proceed?`;
+                                document.getElementById('statusMessage').innerHTML = `<p>${confirmationText}</p>`;
+                                document.getElementById('confirmButton').disabled = false;
+                                document.getElementById('missingFields').innerHTML = '';
+                            } else {
+                                document.getElementById('confirmButton').disabled = true;
+                                document.getElementById('missingFields').innerHTML = `<p>Missing: ${missingFieldsQueue.join(', ')}</p>`;
+                                promptForMissingField();
+                            }
+                        });
+                })
+                .catch(error => console.error('Error:', error));
+        });
+    
+        // Prompt for missing fields
+        function promptForMissingField() {
+            if (missingFieldsQueue.length > 0) {
+                const field = missingFieldsQueue.shift();
+                document.getElementById('statusMessage').innerHTML = `<p>Recording response for ${field.replace('_', ' ')} . . .</p>`;
+                fetch('/fill_missing', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ field: field })
+                })
+                    .then(response => response.json())
+                    .then(data => {
+                        const extracted = data.intent_data.entities;
+                        document.getElementById('projectName').innerText = extracted.PROJECT_NAME || 'Missing';
+                        document.getElementById('amount').innerText = extracted.AMOUNT || 'Missing';
+                        document.getElementById('reason').innerText = extracted.REASON || 'Missing';
+    
+                        if (data.missing_fields.length === 0) {
+                            const confirmationText = `
+                                You are requesting money for project ${extracted.PROJECT_NAME || 'Unknown'} 
+                                with an amount of ${extracted.AMOUNT || 'Unknown'} 
+                                for ${extracted.REASON || 'Unknown'}. 
+                                Do you want to proceed?`;
+                            document.getElementById('statusMessage').innerHTML = `<p>${confirmationText}</p>`;
+                            document.getElementById('confirmButton').disabled = false;
+                            document.getElementById('missingFields').innerHTML = '';
+                        } else {
+                            document.getElementById('missingFields').innerHTML = `<p>Missing: ${data.missing_fields.join(', ')}</p>`;
+                            promptForMissingField();
+                        }
+                    })
+                    .catch(error => console.error('Error:', error));
+            }
+        }
+    
+        // Confirm request
+        document.getElementById('confirmButton').addEventListener('click', function () {
+            fetch('/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirmation: 'yes' })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('statusMessage').innerHTML = `<p>${data.message}</p>`;
+                    if (data.result) {
+                        fetch('/')
+                            .then(response => response.text())
+                            .then(html => {
+                                const parser = new DOMParser();
+                                const doc = parser.parseFromString(html, 'text/html');
+                                document.getElementById('csvTable').innerHTML = doc.getElementById('csvTable').innerHTML;
+                            });
+                    }
+                })
+                .catch(error => console.error('Error:', error));
+        });
+    
+        // Cancel request
+        document.getElementById('cancelButton').addEventListener('click', function () {
+            fetch('/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirmation: 'no' })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('statusMessage').innerHTML = `<p>${data.message}</p>`;
+                })
+                .catch(error => console.error('Error:', error));
+        });
+    </script>
+    
+    
+</body>
+</html>
